@@ -242,9 +242,9 @@ function clashSub(host) {
     "    port: 443",
     `    uuid: ${node.uuid}`,
     "    network: ws",
-    "    tls: true
-    alpn:
-      - http/1.1",
+    "    tls: true",
+        "alpn:",
+          "- http/1.1",
     "    udp: false",
     `    servername: ${yaml(host)}`,
     "    skip-cert-verify: true",
