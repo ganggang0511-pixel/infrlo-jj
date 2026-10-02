@@ -228,7 +228,7 @@ function vlessLink(host, node) {
     sni: host,
     host,
     fp: "chrome",
-    alpn: "h2,http/1.1",
+    encryption: "none",
   });
   return `vless://${node.uuid}@${host}:443?${params}#${encodeURIComponent(node.name)}`;
 }
@@ -242,8 +242,10 @@ function clashSub(host) {
     "    port: 443",
     `    uuid: ${node.uuid}`,
     "    network: ws",
-    "    tls: true",
-    "    udp: true",
+    "    tls: true
+    alpn:
+      - http/1.1",
+    "    udp: false",
     `    servername: ${yaml(host)}`,
     "    skip-cert-verify: true",
     "    ws-opts:",
