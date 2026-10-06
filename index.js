@@ -42,7 +42,10 @@ function buildUuidList(raw) {
     })
     .slice(0, MAX_NODES);
 
-  if (uuids.length === 0) uuids.push(crypto.randomUUID().toLowerCase());
+  if (uuids.length === 0) {
+    uuids.push(crypto.randomUUID().toLowerCase());
+    UUID_AUTO_GENERATED = true;
+  }
   while (uuids.length < MAX_NODES) uuids.push(deriveUuid(uuids[0], uuids.length));
   return uuids;
 }
@@ -107,6 +110,7 @@ function applyRegion(region) {
   for (const node of NODES) node.name = `${node.baseName} · ${region.name}`;
 }
 
+let UUID_AUTO_GENERATED = false;
 const UUID_LIST = buildUuidList(process.env.UUID);
 const NODES = UUID_LIST.map((uuid, index) => ({
   name: `infrlo-vless${index + 1}`,
@@ -243,8 +247,8 @@ function clashSub(host) {
     `    uuid: ${node.uuid}`,
     "    network: ws",
     "    tls: true",
-        "alpn:",
-          "- http/1.1",
+    "    alpn:",
+    "      - http/1.1",
     "    udp: false",
     `    servername: ${yaml(host)}`,
     "    skip-cert-verify: true",
@@ -361,7 +365,7 @@ function formatBytes(value){const bytes=Math.max(0,Number(value)||0);if(bytes<10
 function formatDuration(seconds){const total=Math.max(0,Math.floor(Number(seconds)||0));const days=Math.floor(total/86400);const hours=Math.floor((total%86400)/3600);const minutes=Math.floor((total%3600)/60);if(days)return days+" 天 "+hours+" 小时";if(hours)return hours+" 小时 "+minutes+" 分钟";if(minutes)return minutes+" 分钟";return total+" 秒"}
 function statNumber(label,value){const cell=document.createElement("div");cell.className="stats-number";cell.dataset.label=label;cell.textContent=value;return cell}
 function renderStats(stats){const totals=stats.totals||{};totalUpload.textContent=formatBytes(totals.uploadBytes);totalDownload.textContent=formatBytes(totals.downloadBytes);totalActive.textContent=String(totals.activeConnections||0);nodeStats.replaceChildren();for(const node of stats.nodes||[]){const row=document.createElement("div");row.className="stats-row";const name=document.createElement("div");name.className="stats-node";name.textContent=node.name;row.append(name,statNumber("上传",formatBytes(node.uploadBytes)),statNumber("下载",formatBytes(node.downloadBytes)),statNumber("在线",String(node.activeConnections||0)),statNumber("累计",String(node.connections||0)));nodeStats.appendChild(row)}statsUptime.textContent="已运行 "+formatDuration(stats.uptimeSeconds)}
-async function refreshStats(){try{const response=await fetch("/api/stats",{cache:"no-store"});if(!response.ok)throw new Error("HTTP "+response.status);renderStats(await response.json())}catch(error){statsUptime.textContent="统计服务暂不可用"}}
+async function refreshStats(){try{const response=await fetch("/api/stats"+location.search,{cache:"no-store"});if(!response.ok)throw new Error("HTTP "+response.status);renderStats(await response.json())}catch(error){statsUptime.textContent="统计服务暂不可用"}}
 refreshStats();
 setInterval(refreshStats,5000);
 </script></body></html>`;
@@ -383,6 +387,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === "/api/stats") {
+    if (!checkAuth(url, res)) return;
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
@@ -391,6 +396,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === "/") {
+    if (!checkAuth(url, res)) return;
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     return res.end(homePage(req));
   }
@@ -445,18 +451,38 @@ function handleVLESS(ws, expectedUuidBytes, nodeIndex) {
       return;
     }
 
+    if (offset + 2 > buf.length) {
+      ws.close(1008, "Handshake truncated");
+      return;
+    }
     const port = buf.readUInt16BE(offset);
     offset += 2;
     const addressType = buf[offset++];
     let address;
     if (addressType === 0x01) {
+      if (offset + 4 > buf.length) {
+        ws.close(1008, "Handshake truncated");
+        return;
+      }
       address = `${buf[offset]}.${buf[offset + 1]}.${buf[offset + 2]}.${buf[offset + 3]}`;
       offset += 4;
     } else if (addressType === 0x02) {
+      if (offset + 1 > buf.length) {
+        ws.close(1008, "Handshake truncated");
+        return;
+      }
       const length = buf[offset++];
+      if (offset + length > buf.length) {
+        ws.close(1008, "Handshake truncated");
+        return;
+      }
       address = buf.subarray(offset, offset + length).toString("ascii");
       offset += length;
     } else if (addressType === 0x03) {
+      if (offset + 16 > buf.length) {
+        ws.close(1008, "Handshake truncated");
+        return;
+      }
       address = buf.subarray(offset, offset + 16).toString("hex").match(/.{1,4}/g).join(":");
       offset += 16;
     } else {
@@ -555,17 +581,19 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 async function start() {
-  applyRegion(await detectRegion());
-
   server.listen(PORT, () => {
     console.log(`VLESS+WS server running on port ${PORT}`);
-    console.log(`Region: ${REGION.name || "unknown"}${REGION.code ? ` (${REGION.code})` : ""}`);
     console.log(`Node paths: ${NODES.map((node) => node.path).join(", ")}`);
     if (LEGACY_WS_PATH !== NODES[0].path) console.log(`Legacy path: ${LEGACY_WS_PATH} -> node 1`);
-    console.log(`UUIDs: ${UUID_LIST.join(", ")}`);
+    if (UUID_AUTO_GENERATED) console.log(`Auto-generated UUIDs (save them now): ${UUID_LIST.join(", ")}`);
     console.log(`Dashboard: /${SUB_TOKEN ? "?token=***" : ""}`);
     console.log(`Subscription: /sub${SUB_TOKEN ? "?token=***" : ""}`);
   });
+
+  // 地区识别放后台，不阻塞端口监听，避免 PaaS 健康检查超时
+  const region = await detectRegion();
+  applyRegion(region);
+  console.log(`Region: ${REGION.name || "unknown"}${REGION.code ? ` (${REGION.code})` : ""}`);
 }
 
 start();
